@@ -1,0 +1,2 @@
+cmake -S. -Bbuild -G"MinGW Makefiles" --fresh
+cmake --build build
