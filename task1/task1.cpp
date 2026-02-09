@@ -12,15 +12,12 @@ typedef float real;
 int main() {
     int n = 10000000;
     std::vector<real> arr(n);
+    real sum = 0.0;
     double pi = 3.14159265;
 
     for (int i = 0; i < n; i++) {
         arr[i] = (real)sin(2 * pi * i / n);
-    }
-
-    real sum = 0;
-    for (int i = 0; i < n; i++) {
-        sum = sum + arr[i];
+        sum += arr[i];
     }
 
     std::cout << "Sum: " << sum << std::endl;
