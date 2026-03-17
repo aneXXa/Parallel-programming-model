@@ -1,0 +1,30 @@
+=== System info: see console output (lscpu, numactl, /etc/os-release) ===
+
+=== Scalability table (DGEMV, double, parallel initialization) ===
+
+--- Matrix size M = N = 20000 ---
+T_serial = 0.400636 sec
+ threads      T_n (sec)            S_n
+       1       0.394813       1.014750
+       2       0.219754       1.823111
+       4       0.128169       3.125846
+       7       0.089009       4.501082
+       8       0.079611       5.032401
+      16       0.075026       5.339976
+      20       0.065063       6.157685
+      40       0.067928       5.897944
+
+--- Matrix size M = N = 40000 ---
+T_serial = 39.410349 sec
+ threads      T_n (sec)            S_n
+       1      42.997833       0.916566
+       2      24.634021       1.599834
+       4      18.107003       2.176525
+       7      20.373751       1.934369
+       8      20.005817       1.969945
+      16       9.854747       3.999123
+      20       2.237694      17.612040
+      40       8.835488       4.460461
+
+=== Scalability discussion ===
+Speedup S_n = T_serial / T_n grows with the number of threads but is typically sub-linear (ideal S_n = n). Reasons include thread creation and synchronization overheads, load imbalance, and limited memory bandwidth (DGEMV is memory-bound). For matrices 20000x20000 and 40000x40000 scalability also depends on the number of physical cores and NUMA topology. The program saves speedup data to CSV files (speedup_DGEMV_*.csv); PDF plots can be generated with plot_speedup.py or any spreadsheet tool that can export charts to PDF.
