@@ -1,14 +1,9 @@
-/*
- * Lab 2 Task 2: Численное интегрирование с OpenMP
- * - Функция integrate_omp с локальной переменной и #pragma omp atomic
- * - Сравнение:
- *      * integrate      — последовательная версия
- *      * integrate_omp  — параллельная (atomic + локальная переменная)
- *      * integrate_omp_atomic — «чистый» atomic без редукции
- * - Анализ ускорения для 1,2,4,7,8,16,20,40 потоков при nsteps = 40 000 000
- * - Вывод системной информации (CPU, NUMA, память, OS)
- * - Запись результатов ускорения в CSV для построения PDF‑графика
- */
+// Lab 2 Task 2: numerical integration with OpenMP
+// - integrate: serial midpoint rule
+// - integrate_omp: local sum + #pragma omp atomic
+// - integrate_omp_atomic: plain atomic on each iteration
+// - speedup analysis for 1,2,4,7,8,16,20,40 threads, nsteps = 40 000 000
+// - system information (CPU, NUMA, memory, OS) and CSV output for plotting
 
 #include <stdio.h>
 #include <math.h>
@@ -52,7 +47,6 @@ double integrate(double (*f)(double), double left, double right, int n)
     return sum;
 }
 
-// Вариант с локальной переменной и atomic, как требуется в задании
 double integrate_omp(double (*f)(double), double left, double right, int n)
 {
     double h = (right - left) / n;
@@ -77,7 +71,6 @@ double integrate_omp(double (*f)(double), double left, double right, int n)
     return sum;
 }
 
-// «Чистый» atomic без локальной суммы — для сравнения
 double integrate_omp_atomic(double (*f)(double), double left, double right, int n)
 {
     double h = (right - left) / n;
@@ -101,8 +94,7 @@ double run_serial()
     double t = cpuSecond();
     double res = integrate(func, a, b, nsteps);
     t = cpuSecond() - t;
-    (void)res;
-    // Можно раскомментировать для проверки точности:
+    (void)res; // uncomment printf below to check accuracy if needed
     // printf("Result (serial): %.12f; error %.12f\n", res, fabs(res - sqrt(PI)));
     return t;
 }
@@ -127,7 +119,6 @@ double run_atomic()
     return t;
 }
 
-// Запись ускорения в CSV (без gnuplot)
 void write_speedup_csv_integral(const std::vector<int> &threads,
                                 const std::vector<double> &speedups_par,
                                 const std::vector<double> &speedups_at)

@@ -1,10 +1,8 @@
-/*
- * Lab 2 Task 1: Matrix-vector multiplication (DGEMV)
- * - Multithreaded version with parallel array initialization
- * - Scalability analysis for 1, 2, 4, 7, 8, 16, 20, 40 threads
- * - Matrix sizes: 20000x20000, 40000x40000 (double)
- * - System info: CPU, product name, NUMA, memory, OS
- */
+// Lab 2 Task 1: DGEMV with OpenMP
+// - Serial and parallel matrix–vector product
+// - Parallel initialization of A and b
+// - Scalability study for 1,2,4,7,8,16,20,40 threads and sizes 20000/40000
+// - System information: CPU, product name, NUMA, memory, OS
 
 #include <cstdlib>
 #include <iostream>
@@ -26,10 +24,7 @@ double cpuSecond()
     return ((double)ts.tv_sec + (double)ts.tv_nsec * 1.e-9);
 }
 
-/*
- * matrix_vector_product: Compute matrix-vector product c[m] = a[m][n] * b[n]
- * Serial version.
- */
+// Serial matrix–vector product: c[m] = A[m][n] * b[n]
 void matrix_vector_product(double *a, double *b, double *c, size_t m, size_t n)
 {
     for (size_t i = 0; i < m; i++)
@@ -40,54 +35,33 @@ void matrix_vector_product(double *a, double *b, double *c, size_t m, size_t n)
     }
 }
 
-/*
- * matrix_vector_product_omp: Compute matrix-vector product c[m] = a[m][n] * b[n]
- * Parallel version — rows distributed across threads.
- */
+// Parallel matrix–vector product: rows are distributed across threads
 void matrix_vector_product_omp(double *a, double *b, double *c, size_t m, size_t n)
 {
-#pragma omp parallel
+#pragma omp parallel for
+    for (size_t i = 0; i < m; i++)
     {
-        int nthreads = omp_get_num_threads();
-        int threadid = omp_get_thread_num();
-        int items_per_thread = (int)(m / nthreads);
-        int lb = threadid * items_per_thread;
-        int ub = (threadid == nthreads - 1) ? (int)(m - 1) : (lb + items_per_thread - 1);
-        for (int i = lb; i <= ub; i++)
-        {
-            c[i] = 0.0;
-            for (size_t j = 0; j < n; j++)
-                c[i] += a[i * n + j] * b[j];
-        }
+        c[i] = 0.0;
+        for (size_t j = 0; j < n; j++)
+            c[i] += a[i * n + j] * b[j];
     }
 }
 
-/*
- * Parallel initialization: fill matrix a[m][n] and vector b[n].
- * a[i][j] = i + j, b[j] = j.
- */
+// Parallel initialization: A[i,j] = i + j, b[j] = j
 void init_arrays_parallel(double *a, double *b, size_t m, size_t n)
 {
-#pragma omp parallel
+    // Parallelize rows of the matrix
+#pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < m; i++)
     {
-        int nthreads = omp_get_num_threads();
-        int tid = omp_get_thread_num();
-        size_t rows_per_thread = m / (size_t)nthreads;
-        size_t i_start = (size_t)tid * rows_per_thread;
-        size_t i_end = (tid == nthreads - 1) ? m : (i_start + rows_per_thread);
-
-        for (size_t i = i_start; i < i_end; i++)
-        {
-            for (size_t j = 0; j < n; j++)
-                a[i * n + j] = (double)(i + j);
-        }
-
-        size_t vec_chunk = n / (size_t)nthreads;
-        size_t j_start = (size_t)tid * vec_chunk;
-        size_t j_end = (tid == nthreads - 1) ? n : (j_start + vec_chunk);
-        for (size_t j = j_start; j < j_end; j++)
-            b[j] = (double)j;
+        for (size_t j = 0; j < n; j++)
+            a[i * n + j] = (double)(i + j);
     }
+
+    // Parallelize elements of vector b
+#pragma omp parallel for schedule(static)
+    for (size_t j = 0; j < n; j++)
+        b[j] = (double)j;
 }
 
 double run_serial(size_t n, size_t m)
@@ -101,7 +75,7 @@ double run_serial(size_t n, size_t m)
         free(a);
         free(b);
         free(c);
-        std::cerr << "Error allocate memory in run_serial for size "
+        std::cerr << "Error allocating memory in run_serial for size "
                   << "M=" << m << ", N=" << n << std::endl;
         return -1.0;
     }
@@ -135,7 +109,7 @@ double run_parallel(size_t n, size_t m, int nthreads)
         free(a);
         free(b);
         free(c);
-        std::cerr << "Error allocate memory in run_parallel for size "
+        std::cerr << "Error allocating memory in run_parallel for size "
                   << "M=" << m << ", N=" << n
                   << ", threads=" << nthreads << std::endl;
         return -1.0;
@@ -261,14 +235,13 @@ void print_system_info(std::ostream &out)
 
 void write_report_conclusion(std::ostream &out)
 {
-    out << "\n=== Вывод о масштабируемости ===\n";
-    out << "Ускорение S_n = T_serial / T_n. По результатам замеров: ускорение растёт с увеличением "
-        << "числа потоков, но обычно меньше линейного (идеальное S_n = n). Причины: накладные расходы "
-        << "на создание потоков и синхронизацию, неравномерная загрузка, ограниченная пропускная "
-        << "способность памяти (задача memory-bound). Для матриц 20000x20000 и 40000x40000 масштабируемость "
-        << "зависит от числа ядер и топологии NUMA. Для графиков программа сохраняет данные в CSV "
-        << "(speedup_DGEMV_*.csv). PDF-графики можно построить скриптом lab2/plot_speedup.py "
-        << "(если доступен Python+matplotlib) или любым табличным редактором с экспортом в PDF.\n";
+    out << "\n=== Scalability discussion ===\n";
+    out << "Speedup S_n = T_serial / T_n grows with the number of threads but is typically sub-linear "
+        << "(ideal S_n = n). Reasons include thread creation and synchronization overheads, load imbalance, "
+        << "and limited memory bandwidth (DGEMV is memory-bound). For matrices 20000x20000 and 40000x40000 "
+        << "scalability also depends on the number of physical cores and NUMA topology. The program saves "
+        << "speedup data to CSV files (speedup_DGEMV_*.csv); PDF plots can be generated with plot_speedup.py "
+        << "or any spreadsheet tool that can export charts to PDF.\n";
 }
 
 int main(int argc, char *argv[])
@@ -283,8 +256,8 @@ int main(int argc, char *argv[])
     std::ofstream report_file(report_path);
     if (report_file)
     {
-        report_file << "=== System info: см. вывод программы в консоли (lscpu, numactl, /etc/os-release) ===\n";
-        report_file << "\n=== Таблица масштабируемости (DGEMV, double, параллельная инициализация) ===\n";
+        report_file << "=== System info: see console output (lscpu, numactl, /etc/os-release) ===\n";
+        report_file << "\n=== Scalability table (DGEMV, double, parallel initialization) ===\n";
     }
 
     std::cout << "\n=== DGEMV scalability tests (threads: 1,2,4,7,8,16,20,40; sizes: 20000, 40000) ===" << std::endl;
