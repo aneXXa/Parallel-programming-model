@@ -3,28 +3,28 @@
 === Scalability table (DGEMV, double, parallel initialization) ===
 
 --- Matrix size M = N = 20000 ---
-T_serial = 0.400636 sec
+T_serial = 0.935092727 sec
  threads      T_n (sec)            S_n
-       1       0.394813       1.014750
-       2       0.219754       1.823111
-       4       0.128169       3.125846
-       7       0.089009       4.501082
-       8       0.079611       5.032401
-      16       0.075026       5.339976
-      20       0.065063       6.157685
-      40       0.067928       5.897944
+       1    0.933506687    1.001699013
+       2    0.480478883    1.946168210
+       4    0.318234563    2.938375766
+       7    0.175778588    5.319719198
+       8    0.158124089    5.913663957
+      16    0.136177182    6.866735765
+      20    0.091858745   10.179681109
+      40    0.055007895   16.999245839
 
 --- Matrix size M = N = 40000 ---
-T_serial = 39.410349 sec
+T_serial = 5.338674068 sec
  threads      T_n (sec)            S_n
-       1      42.997833       0.916566
-       2      24.634021       1.599834
-       4      18.107003       2.176525
-       7      20.373751       1.934369
-       8      20.005817       1.969945
-      16       9.854747       3.999123
-      20       2.237694      17.612040
-      40       8.835488       4.460461
+       1    3.561924259    1.498817403
+       2    2.146828810    2.486772137
+       4    1.015617013    5.256581960
+       7    0.744151950    7.174171981
+       8    0.731710235    7.296158795
+      16    0.294212540   18.145637397
+      20    0.357424458   14.936510222
+      40    0.392679691   13.595493188
 
 === Scalability discussion ===
 Speedup S_n = T_serial / T_n grows with the number of threads but is typically sub-linear (ideal S_n = n). Reasons include thread creation and synchronization overheads, load imbalance, and limited memory bandwidth (DGEMV is memory-bound). For matrices 20000x20000 and 40000x40000 scalability also depends on the number of physical cores and NUMA topology. The program saves speedup data to CSV files (speedup_DGEMV_*.csv); PDF plots can be generated with plot_speedup.py or any spreadsheet tool that can export charts to PDF.

@@ -16,6 +16,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <algorithm>
 
 const double PI = 3.14159265358979323846;
 const double a = -4.0;
@@ -27,6 +28,19 @@ double cpuSecond()
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     return ((double)ts.tv_sec + (double)ts.tv_nsec * 1.e-9);
+}
+
+static double mean_drop_max(std::vector<double> samples, int drop_max)
+{
+    if (samples.empty())
+        return -1.0;
+    std::sort(samples.begin(), samples.end());
+    if (drop_max > 0 && (int)samples.size() > drop_max)
+        samples.resize(samples.size() - (size_t)drop_max);
+    double sum = 0.0;
+    for (double v : samples)
+        sum += v;
+    return sum / (double)samples.size();
 }
 
 double func(double x)
@@ -148,22 +162,32 @@ void write_speedup_csv_integral(const std::vector<int> &threads,
     csv_file.close();
 }
 
-void run_experiment()
+void run_experiment(bool verbose = true, bool write_csv = true)
 {
     const int threads_list[] = {1, 2, 4, 7, 8, 16, 20, 40};
+    const int repeats = 7;
+    const int drop_max = 1;
 
-    std::cout << std::fixed << std::setprecision(6);
+    if (verbose)
+        std::cout << std::fixed << std::setprecision(9);
 
-    double T_serial = run_serial();
+    std::vector<double> t_serial_samples;
+    t_serial_samples.reserve(repeats);
+    for (int r = 0; r < repeats; ++r)
+        t_serial_samples.push_back(run_serial());
+    double T_serial = mean_drop_max(t_serial_samples, drop_max);
 
-    std::cout << "T_serial = " << T_serial << " sec" << std::endl;
-    std::cout << std::endl;
+    if (verbose)
+    {
+        std::cout << "T_serial = " << T_serial << " sec" << std::endl;
+        std::cout << std::endl;
 
-    std::cout << std::setw(8) << "n"
-              << std::setw(15) << "T_par"
-              << std::setw(15) << "S_par"
-              << std::setw(15) << "T_at"
-              << std::setw(15) << "S_at" << std::endl;
+        std::cout << std::setw(8) << "n"
+                  << std::setw(15) << "T_par"
+                  << std::setw(15) << "S_par"
+                  << std::setw(15) << "T_at"
+                  << std::setw(15) << "S_at" << std::endl;
+    }
 
     std::vector<int> used_threads;
     std::vector<double> speedups_par;
@@ -173,27 +197,41 @@ void run_experiment()
     {
         int nthreads = threads_list[i];
 
-        omp_set_num_threads(nthreads);
-        double T_par = run_parallel();
+        std::vector<double> t_par_samples;
+        t_par_samples.reserve(repeats);
+        for (int r = 0; r < repeats; ++r)
+        {
+            omp_set_num_threads(nthreads);
+            t_par_samples.push_back(run_parallel());
+        }
+        double T_par = mean_drop_max(t_par_samples, drop_max);
 
-        omp_set_num_threads(nthreads);
-        double T_at = run_atomic();
+        std::vector<double> t_at_samples;
+        t_at_samples.reserve(repeats);
+        for (int r = 0; r < repeats; ++r)
+        {
+            omp_set_num_threads(nthreads);
+            t_at_samples.push_back(run_atomic());
+        }
+        double T_at = mean_drop_max(t_at_samples, drop_max);
 
         double S_par = (T_par > 0.0) ? (T_serial / T_par) : 0.0;
         double S_at = (T_at > 0.0) ? (T_serial / T_at) : 0.0;
 
-        std::cout << std::setw(8) << nthreads
-                  << std::setw(15) << T_par
-                  << std::setw(15) << S_par
-                  << std::setw(15) << T_at
-                  << std::setw(15) << S_at << std::endl;
+        if (verbose)
+            std::cout << std::setw(8) << nthreads
+                      << std::setw(15) << T_par
+                      << std::setw(15) << S_par
+                      << std::setw(15) << T_at
+                      << std::setw(15) << S_at << std::endl;
 
         used_threads.push_back(nthreads);
         speedups_par.push_back(S_par);
         speedups_at.push_back(S_at);
     }
 
-    write_speedup_csv_integral(used_threads, speedups_par, speedups_at);
+    if (write_csv)
+        write_speedup_csv_integral(used_threads, speedups_par, speedups_at);
 }
 
 void print_system_info()
@@ -231,11 +269,24 @@ int main(int argc, char **argv)
 
     print_system_info();
 
+    const int overall_repeats = 3;
+    const int overall_drop_max = 1;
+    std::vector<double> total_samples;
+    total_samples.reserve(overall_repeats);
+    for (int r = 0; r < overall_repeats; ++r)
+    {
+        double t0 = cpuSecond();
+        run_experiment(false, false);
+        total_samples.push_back(cpuSecond() - t0);
+    }
+    double T_total_mean = mean_drop_max(total_samples, overall_drop_max);
+    std::cout << "\nMean total runtime over " << overall_repeats
+              << " full runs (drop max " << overall_drop_max << "): "
+              << T_total_mean << " sec\n";
+
     std::cout << std::endl
               << "=== Integral speedup experiments (nsteps = 40 000 000) ===" << std::endl;
-
-    run_experiment();
-
+    run_experiment(true, true);
     std::cout << "Speedup data written to speedup_integral_" << nsteps << ".csv" << std::endl;
 
     return 0;

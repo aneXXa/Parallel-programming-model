@@ -11,6 +11,7 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,19 @@ double cpuSecond()
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     return ((double)ts.tv_sec + (double)ts.tv_nsec * 1.e-9);
+}
+
+static double mean_drop_max(std::vector<double> samples, int drop_max)
+{
+    if (samples.empty())
+        return -1.0;
+    std::sort(samples.begin(), samples.end());
+    if (drop_max > 0 && (int)samples.size() > drop_max)
+        samples.resize(samples.size() - (size_t)drop_max);
+    double sum = 0.0;
+    for (double v : samples)
+        sum += v;
+    return sum / (double)samples.size();
 }
 
 // Serial matrix–vector product: c[m] = A[m][n] * b[n]
@@ -50,7 +64,6 @@ void matrix_vector_product_omp(double *a, double *b, double *c, size_t m, size_t
 // Parallel initialization: A[i,j] = i + j, b[j] = j
 void init_arrays_parallel(double *a, double *b, size_t m, size_t n)
 {
-    // Parallelize rows of the matrix
 #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < m; i++)
     {
@@ -58,7 +71,6 @@ void init_arrays_parallel(double *a, double *b, size_t m, size_t n)
             a[i * n + j] = (double)(i + j);
     }
 
-    // Parallelize elements of vector b
 #pragma omp parallel for schedule(static)
     for (size_t j = 0; j < n; j++)
         b[j] = (double)j;
@@ -150,35 +162,63 @@ void write_speedup_csv(size_t size, const std::vector<int> &threads, const std::
     csv_file.close();
 }
 
-void run_experiments(std::ostream *report_file = nullptr)
+void run_experiments(std::ostream *report_file = nullptr, bool verbose = true)
 {
     const size_t sizes[] = {20000, 40000};
     const int threads_list[] = {1, 2, 4, 7, 8, 16, 20, 40};
     const size_t num_sizes = sizeof(sizes) / sizeof(sizes[0]);
     const size_t num_threads = sizeof(threads_list) / sizeof(threads_list[0]);
 
-    std::cout << std::fixed << std::setprecision(6);
+    const int repeats = 7;
+    const int drop_max = 1;
+
+    if (verbose)
+        std::cout << std::fixed << std::setprecision(9);
     if (report_file)
-        (*report_file) << std::fixed << std::setprecision(6);
+        (*report_file) << std::fixed << std::setprecision(9);
 
     for (size_t sz_idx = 0; sz_idx < num_sizes; ++sz_idx)
     {
         size_t M = sizes[sz_idx];
         size_t N = sizes[sz_idx];
 
-        std::cout << "\nMatrix size M = N = " << M << std::endl;
+        if (verbose)
+            std::cout << "\nMatrix size M = N = " << M << std::endl;
 
-        double T_serial = run_serial(N, M);
-        if (T_serial < 0.0)
+        double *a = (double *)malloc(sizeof(double) * M * N);
+        double *b = (double *)malloc(sizeof(double) * N);
+        double *c = (double *)malloc(sizeof(double) * M);
+
+        if (!a || !b || !c)
         {
-            std::cout << "Skip size " << M << " (not enough memory)" << std::endl;
+            free(a);
+            free(b);
+            free(c);
+            if (verbose)
+                std::cout << "Skip size " << M << " (not enough memory)" << std::endl;
             continue;
         }
 
-        std::cout << "T_serial = " << T_serial << " sec\n" << std::endl;
-        std::cout << std::setw(8) << "n"
-                  << std::setw(15) << "T_n (sec)"
-                  << std::setw(15) << "S_n=T_serial/Tn" << std::endl;
+        omp_set_num_threads(1);
+        init_arrays_parallel(a, b, M, N);
+
+        std::vector<double> t_serial_samples;
+        t_serial_samples.reserve(repeats);
+        for (int r = 0; r < repeats; ++r)
+        {
+            double t0 = cpuSecond();
+            matrix_vector_product(a, b, c, M, N);
+            t_serial_samples.push_back(cpuSecond() - t0);
+        }
+        double T_serial = mean_drop_max(t_serial_samples, drop_max);
+
+        if (verbose)
+        {
+            std::cout << "T_serial = " << T_serial << " sec\n" << std::endl;
+            std::cout << std::setw(8) << "n"
+                      << std::setw(15) << "T_n (sec)"
+                      << std::setw(15) << "S_n=T_serial/Tn" << std::endl;
+        }
 
         if (report_file)
         {
@@ -193,17 +233,22 @@ void run_experiments(std::ostream *report_file = nullptr)
         for (size_t i = 0; i < num_threads; ++i)
         {
             int nthreads = threads_list[i];
-            double T_n = run_parallel(N, M, nthreads);
-            if (T_n < 0.0)
+            omp_set_num_threads(nthreads);
+
+            std::vector<double> t_samples;
+            t_samples.reserve(repeats);
+            for (int r = 0; r < repeats; ++r)
             {
-                std::cout << std::setw(8) << nthreads << std::setw(15) << "N/A" << std::setw(15) << "N/A" << std::endl;
-                if (report_file)
-                    *report_file << std::setw(8) << nthreads << std::setw(15) << "N/A" << std::setw(15) << "N/A" << "\n";
-                continue;
+                double t0 = cpuSecond();
+                matrix_vector_product_omp(a, b, c, M, N);
+                t_samples.push_back(cpuSecond() - t0);
             }
+            double T_n = mean_drop_max(t_samples, drop_max);
+
             double S_n = (T_n > 0.0) ? (T_serial / T_n) : 0.0;
 
-            std::cout << std::setw(8) << nthreads << std::setw(15) << T_n << std::setw(15) << S_n << std::endl;
+            if (verbose)
+                std::cout << std::setw(8) << nthreads << std::setw(15) << T_n << std::setw(15) << S_n << std::endl;
             if (report_file)
                 *report_file << std::setw(8) << nthreads << std::setw(15) << T_n << std::setw(15) << S_n << "\n";
 
@@ -212,6 +257,10 @@ void run_experiments(std::ostream *report_file = nullptr)
         }
 
         write_speedup_csv(M, used_threads, used_speedups);
+
+        free(a);
+        free(b);
+        free(c);
     }
 }
 
@@ -260,9 +309,23 @@ int main(int argc, char *argv[])
         report_file << "\n=== Scalability table (DGEMV, double, parallel initialization) ===\n";
     }
 
-    std::cout << "\n=== DGEMV scalability tests (threads: 1,2,4,7,8,16,20,40; sizes: 20000, 40000) ===" << std::endl;
+    const int overall_repeats = 3;
+    const int overall_drop_max = 1;
+    std::vector<double> total_samples;
+    total_samples.reserve(overall_repeats);
+    for (int r = 0; r < overall_repeats; ++r)
+    {
+        double t0 = cpuSecond();
+        run_experiments(nullptr, false);
+        total_samples.push_back(cpuSecond() - t0);
+    }
+    double T_total_mean = mean_drop_max(total_samples, overall_drop_max);
+    std::cout << "\nMean total runtime over " << overall_repeats
+              << " full runs (drop max " << overall_drop_max << "): "
+              << T_total_mean << " sec\n";
 
-    run_experiments(report_file ? &report_file : nullptr);
+    std::cout << "\n=== DGEMV scalability tests (threads: 1,2,4,7,8,16,20,40; sizes: 20000, 40000) ===" << std::endl;
+    run_experiments(report_file ? &report_file : nullptr, true);
 
     if (report_file)
     {

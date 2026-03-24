@@ -27,17 +27,29 @@ def plot_one(csv_path: Path):
     threads, speedups = read_csv(csv_path)
     size = csv_path.stem.replace("speedup_DGEMV_", "")
     out_pdf = csv_path.with_suffix(".pdf")
+    efficiencies = [s / t for s, t in zip(speedups, threads)]
 
-    plt.figure(figsize=(8, 6))
-    plt.plot(threads, speedups, marker="o")
-    plt.title(f"Speedup vs threads (M=N={size})")
-    plt.xlabel("Number of threads")
-    plt.ylabel("Speedup S_n = T_serial / T_n")
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.xticks(threads)
-    plt.tight_layout()
-    plt.savefig(out_pdf)
-    plt.close()
+    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 12), constrained_layout=True)
+
+    axes[0].plot(threads, speedups, marker="o", label="Measured speedup")
+    axes[0].plot(threads, threads, linestyle="--", color="gray", label="Ideal speedup x=y")
+    axes[0].set_title(f"Speedup vs threads (M=N={size})")
+    axes[0].set_xlabel("Number of threads")
+    axes[0].set_ylabel("Speedup S_n = T_serial / T_n")
+    axes[0].grid(True, linestyle="--", alpha=0.5)
+    axes[0].set_xticks(threads)
+    axes[0].legend()
+
+    axes[1].plot(threads, efficiencies, marker="o", label="Measured efficiency")
+    axes[1].set_title(f"Efficiency vs threads (M=N={size})")
+    axes[1].set_xlabel("Number of threads")
+    axes[1].set_ylabel("Efficiency E_n = S_n / n")
+    axes[1].grid(True, linestyle="--", alpha=0.5)
+    axes[1].set_xticks(threads)
+    axes[1].legend()
+
+    fig.savefig(out_pdf)
+    plt.close(fig)
     return out_pdf
 
 
