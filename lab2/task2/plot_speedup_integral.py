@@ -27,44 +27,68 @@ def plot_one(csv_path: Path):
         )
 
     threads, s_par, s_at = read_csv(csv_path)
-    size = csv_path.stem.replace("speedup_integral_", "")
-    out_pdf = csv_path.with_suffix(".pdf")
+    out_speedup_pdf = csv_path.with_suffix(".pdf")
+    out_eff_pdf = csv_path.with_name(f"{csv_path.stem}_efficiency.pdf")
     e_par = [s / t for s, t in zip(s_par, threads)]
     e_at = [s / t for s, t in zip(s_at, threads)]
 
-    fig, axes = plt.subplots(nrows=2, ncols=1, figsize=(8, 12), constrained_layout=True)
+    plt.figure(figsize=(8, 6))
+    plt.plot(threads, s_par, marker="o", linewidth=2, label="integrate_omp (local+atomic)")
+    plt.plot(threads, s_at, marker="s", linewidth=2, label="integrate_omp_atomic")
+    plt.plot(threads, threads, linestyle="--", color="gray", label="Ideal speedup x=y")
+    plt.title("Numerical integration: Speedup graph")
+    plt.xlabel("Number of threads")
+    plt.ylabel("Speedup")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.xticks(threads)
+    plt.legend()
+    if threads:
+        plt.annotate(
+            f"{s_par[-1]:.1f}x",
+            xy=(threads[-1], s_par[-1]),
+            xytext=(8, -10),
+            textcoords="offset points",
+            fontsize=9,
+            fontweight="bold",
+            bbox={"boxstyle": "round,pad=0.2", "fc": "#fff59d", "ec": "#9e9e9e", "alpha": 0.95},
+        )
+        plt.annotate(
+            f"{s_at[-1]:.1f}x",
+            xy=(threads[-1], s_at[-1]),
+            xytext=(8, 8),
+            textcoords="offset points",
+            fontsize=9,
+            fontweight="bold",
+            bbox={"boxstyle": "round,pad=0.2", "fc": "#fff59d", "ec": "#9e9e9e", "alpha": 0.95},
+        )
+    plt.tight_layout()
+    plt.savefig(out_speedup_pdf)
+    plt.close()
 
-    axes[0].plot(threads, s_par, marker="o", label="integrate_omp (local+atomic)")
-    axes[0].plot(threads, s_at, marker="s", label="integrate_omp_atomic")
-    # Keep measured curves visible even when ideal speedup has a very different scale.
-    max_measured = max(max(s_par), max(s_at))
-    axes[0].set_ylim(0.0, max_measured * 1.15 if max_measured > 0 else 1.0)
+    plt.figure(figsize=(8, 6))
+    plt.plot(threads, e_par, marker="o", linewidth=2, label="integrate_omp (local+atomic)")
+    plt.plot(threads, e_at, marker="s", linewidth=2, label="integrate_omp_atomic")
+    plt.title("Numerical integration: Efficiency graph")
+    plt.xlabel("Number of threads")
+    plt.ylabel("Efficiency")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.xticks(threads)
+    plt.legend()
+    plt.text(
+        0.98,
+        0.78,
+        r"Efficiency formula: $E_n = \frac{S_n}{n}$",
+        transform=plt.gca().transAxes,
+        fontsize=10,
+        verticalalignment="top",
+        horizontalalignment="right",
+        bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "#9e9e9e", "alpha": 0.95},
+    )
+    plt.tight_layout()
+    plt.savefig(out_eff_pdf)
+    plt.close()
 
-    ax_ideal = axes[0].twinx()
-    ax_ideal.plot(threads, threads, linestyle="--", color="gray", label="Ideal speedup x=y")
-    ax_ideal.set_ylabel("Ideal speedup scale")
-    ax_ideal.set_ylim(0.0, max(threads) * 1.15 if threads else 1.0)
-    axes[0].set_title(f"Speedup vs threads (integral, nsteps={size})")
-    axes[0].set_xlabel("Number of threads")
-    axes[0].set_ylabel("Speedup S_n = T_serial / T_n")
-    axes[0].grid(True, linestyle="--", alpha=0.5)
-    axes[0].set_xticks(threads)
-    handles_main, labels_main = axes[0].get_legend_handles_labels()
-    handles_ideal, labels_ideal = ax_ideal.get_legend_handles_labels()
-    axes[0].legend(handles_main + handles_ideal, labels_main + labels_ideal, loc="upper left")
-
-    axes[1].plot(threads, e_par, marker="o", label="integrate_omp (local+atomic)")
-    axes[1].plot(threads, e_at, marker="s", label="integrate_omp_atomic")
-    axes[1].set_title(f"Efficiency vs threads (integral, nsteps={size})")
-    axes[1].set_xlabel("Number of threads")
-    axes[1].set_ylabel("Efficiency E_n = S_n / n")
-    axes[1].grid(True, linestyle="--", alpha=0.5)
-    axes[1].set_xticks(threads)
-    axes[1].legend()
-
-    fig.savefig(out_pdf)
-    plt.close(fig)
-    return out_pdf
+    return out_speedup_pdf, out_eff_pdf
 
 
 def main(argv):
@@ -76,8 +100,9 @@ def main(argv):
     for p in argv[1:]:
         csv_path = Path(p)
         try:
-            out = plot_one(csv_path)
-            print(f"Wrote {out}")
+            out_speedup, out_eff = plot_one(csv_path)
+            print(f"Wrote {out_speedup}")
+            print(f"Wrote {out_eff}")
         except Exception as e:
             print(str(e), file=sys.stderr)
             rc = 1

@@ -134,11 +134,15 @@ double run_atomic()
 }
 
 void write_speedup_csv_integral(const std::vector<int> &threads,
+                                const std::vector<double> &times_par,
                                 const std::vector<double> &speedups_par,
+                                const std::vector<double> &times_at,
                                 const std::vector<double> &speedups_at)
 {
     if (threads.empty() ||
+        times_par.size() != threads.size() ||
         speedups_par.size() != threads.size() ||
+        times_at.size() != threads.size() ||
         speedups_at.size() != threads.size())
         return;
 
@@ -154,10 +158,14 @@ void write_speedup_csv_integral(const std::vector<int> &threads,
         return;
     }
 
-    csv_file << "threads,S_par,S_at\n";
+    csv_file << "threads,T_par,S_par,T_at,S_at\n";
     for (std::size_t i = 0; i < threads.size(); ++i)
     {
-        csv_file << threads[i] << "," << speedups_par[i] << "," << speedups_at[i] << "\n";
+        csv_file << threads[i] << ","
+                 << times_par[i] << ","
+                 << speedups_par[i] << ","
+                 << times_at[i] << ","
+                 << speedups_at[i] << "\n";
     }
     csv_file.close();
 }
@@ -190,7 +198,9 @@ void run_experiment(bool verbose = true, bool write_csv = true)
     }
 
     std::vector<int> used_threads;
+    std::vector<double> times_par;
     std::vector<double> speedups_par;
+    std::vector<double> times_at;
     std::vector<double> speedups_at;
 
     for (std::size_t i = 0; i < sizeof(threads_list) / sizeof(threads_list[0]); ++i)
@@ -226,12 +236,14 @@ void run_experiment(bool verbose = true, bool write_csv = true)
                       << std::setw(15) << S_at << std::endl;
 
         used_threads.push_back(nthreads);
+        times_par.push_back(T_par);
         speedups_par.push_back(S_par);
+        times_at.push_back(T_at);
         speedups_at.push_back(S_at);
     }
 
     if (write_csv)
-        write_speedup_csv_integral(used_threads, speedups_par, speedups_at);
+        write_speedup_csv_integral(used_threads, times_par, speedups_par, times_at, speedups_at);
 }
 
 void print_system_info()

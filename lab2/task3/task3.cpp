@@ -1,405 +1,340 @@
 #include <cmath>
-#include <cstdlib>
-#include <cstring>
-#include <iostream>
-#include <iomanip>
 #include <fstream>
-#include <sstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <string>
 #include <vector>
-#include <algorithm>
 
 #include <omp.h>
-#include <stdio.h>
-#include <time.h>
 
-static const int MAX_ITER = 1000;
-static const double TOL = 1e-10;
+struct Config {
+    int n = 10000;
+    int max_iter = 20000;
+    double tol = 1e-8;
+    double tau = 0.02;
+    int variant = 1;
+    int threads = 1;
+    omp_sched_t schedule_kind = omp_sched_static;
+    int chunk_size = 0;
+};
 
-static const std::size_t N_EXPERIMENT = 15000;
-static const int OVERALL_RUNS_DEFAULT = 1;
+struct Result {
+    int iters = 0;
+    double residual = 0.0;
+    double seconds = 0.0;
+};
 
-double cpuSecond()
-{
-    struct timespec ts;
-    timespec_get(&ts, TIME_UTC);
-    return ((double)ts.tv_sec + (double)ts.tv_nsec * 1.e-9);
+struct VariantRow {
+    int variant = 0;
+    int threads = 0;
+    int n = 0;
+    int max_iter = 0;
+    double tau = 0.0;
+    double tol = 0.0;
+    int iterations = 0;
+    double residual = 0.0;
+    double time_sec = 0.0;
+    std::string schedule;
+    int chunk = 0;
+    double speedup = 0.0;
+    double efficiency = 0.0;
+};
+
+struct SchedulePlan {
+    omp_sched_t kind = omp_sched_static;
+    const char *name = "static";
+    int chunk = 0;
+};
+
+static inline double a_ij(int i, int j) {
+    return (i == j) ? 4.0 : (1.0 / (1.0 + std::abs(i - j)));
 }
 
-static double mean_drop_max(std::vector<double> samples, int drop_max)
-{
-    if (samples.empty())
-        return -1.0;
-    std::sort(samples.begin(), samples.end());
-    if (drop_max > 0 && (int)samples.size() > drop_max)
-        samples.resize(samples.size() - (size_t)drop_max);
-    double sum = 0.0;
-    for (double v : samples)
-        sum += v;
-    return sum / (double)samples.size();
-}
-
-// ---------- matrix generation ----------
-// A[i][i] = 2.0, A[i][j] = 1.0 for i != j; b[i] = N + 1 (exact solution x = 1)
-void generate_system(std::vector<double> &a, std::vector<double> &b, std::size_t n)
-{
-    a.resize(n * n);
-    b.resize(n);
-
-    for (std::size_t i = 0; i < n; i++)
-    {
-        double row_sum = 0.0;
-        for (std::size_t j = 0; j < n; j++)
-        {
-            if (i == j)
-                a[i * n + j] = 2.0;
-            else
-                a[i * n + j] = 1.0;
-            row_sum += a[i * n + j];
+static void build_problem(int n, std::vector<double> &b) {
+    // Deterministic fill: always the same matrix/vector for any thread count.
+    const std::vector<double> x_true(n, 1.0);
+    b.assign(n, 0.0);
+    for (int i = 0; i < n; ++i) {
+        double sum = 0.0;
+        for (int j = 0; j < n; ++j) {
+            sum += a_ij(i, j) * x_true[j];
         }
-        // For x = 1  b[i] = sum_j A[i][j] * 1 = N + 1
-        b[i] = row_sum;
+        b[i] = sum;
     }
 }
 
-// ---------- helper: high‑resolution timer wrapper for solvers ----------
-double run_solver(int (*solver)(const double *, const double *, double *, std::size_t, int, double),
-                  const double *a, const double *b, double *x, std::size_t n,
-                  int max_iter, double tol, int nthreads)
-{
-    omp_set_num_threads(nthreads);
-    double t = cpuSecond();
-    solver(a, b, x, n, max_iter, tol);
-    t = cpuSecond() - t;
-    return t;
-}
+static Result richardson_variant1(const Config &cfg, const std::vector<double> &b) {
+    const int n = cfg.n;
+    std::vector<double> x(n, 0.0), r(n, 0.0), ax(n, 0.0), x_new(n, 0.0);
 
-// ---------- serial Jacobi (baseline) ----------
-int solve_jacobi_serial(const double *a, const double *b, double *x, std::size_t n,
-                        int max_iter, double tol)
-{
-    if (n == 0 || a == nullptr || b == nullptr || x == nullptr)
-        return -1;
-    for (std::size_t i = 0; i < n; i++)
-        if (std::abs(a[i * n + i]) < 1e-15)
-            return -1;
+    double residual = std::numeric_limits<double>::infinity();
+    int iter = 0;
+    const double t0 = omp_get_wtime();
 
-    // Richardson iteration parameter; chosen conservatively based on n
-    double tau = 1.0 / (2.0 * static_cast<double>(n));
-
-    std::vector<double> x_old(n, 0.0);
-    int iter;
-
-    for (iter = 0; iter < max_iter; iter++)
-    {
-        double res_norm = 0.0;
-        for (std::size_t i = 0; i < n; i++)
-        {
+    for (; iter < cfg.max_iter && residual > cfg.tol; ++iter) {
+        #pragma omp parallel for schedule(runtime)
+        for (int i = 0; i < n; ++i) {
             double sum = 0.0;
-            for (std::size_t j = 0; j < n; j++)
-                sum += a[i * n + j] * x_old[j];
-
-            double ri = b[i] - sum;
-            x[i] = x_old[i] + tau * ri;
-            res_norm += ri * ri;
+            for (int j = 0; j < n; ++j) {
+                sum += a_ij(i, j) * x[j];
+            }
+            ax[i] = sum;
         }
 
-        res_norm = std::sqrt(res_norm);
-        if (res_norm <= tol)
-            return iter + 1;
+        #pragma omp parallel for schedule(runtime)
+        for (int i = 0; i < n; ++i) {
+            r[i] = b[i] - ax[i];
+        }
 
-        std::memcpy(x_old.data(), x, n * sizeof(double));
+        double norm_sq = 0.0;
+        #pragma omp parallel for schedule(runtime) reduction(+ : norm_sq)
+        for (int i = 0; i < n; ++i) {
+            norm_sq += r[i] * r[i];
+        }
+        residual = std::sqrt(norm_sq);
+
+        #pragma omp parallel for schedule(runtime)
+        for (int i = 0; i < n; ++i) {
+            x_new[i] = x[i] + cfg.tau * r[i];
+        }
+
+        x.swap(x_new);
     }
-    return -1; // not converged
+
+    const double t1 = omp_get_wtime();
+    return {iter, residual, t1 - t0};
 }
 
-// ---------- parallel Jacobi, Variant 1: separate parallel for for each loop ----------
-int solve_jacobi_parallel_blocks(const double *a, const double *b, double *x, std::size_t n,
-                                 int max_iter, double tol)
-{
-    if (n == 0 || a == nullptr || b == nullptr || x == nullptr)
-        return -1;
-    for (std::size_t i = 0; i < n; i++)
-        if (std::abs(a[i * n + i]) < 1e-15)
-            return -1;
+static Result richardson_variant2(const Config &cfg, const std::vector<double> &b) {
+    const int n = cfg.n;
+    std::vector<double> x(n, 0.0), r(n, 0.0), ax(n, 0.0), x_new(n, 0.0);
 
-    double tau = 1.0 / (2.0 * static_cast<double>(n));
+    double residual = std::numeric_limits<double>::infinity();
+    double norm_sq = 0.0;
+    int iter = 0;
+    const double t0 = omp_get_wtime();
 
-    std::vector<double> x_old(n, 0.0);
-    int iter;
-
-    for (iter = 0; iter < max_iter; iter++)
+    #pragma omp parallel default(none) shared(x, r, ax, x_new, b, residual, norm_sq, iter, cfg, n)
     {
-        double res_norm = 0.0;
-
-#pragma omp parallel for
-        for (std::size_t i = 0; i < n; i++)
-        {
-            double sum = 0.0;
-            for (std::size_t j = 0; j < n; j++)
-                sum += a[i * n + j] * x_old[j];
-
-            double ri = b[i] - sum;
-            x[i] = x_old[i] + tau * ri;
-        }
-
-#pragma omp parallel for reduction(+ : res_norm)
-        for (std::size_t i = 0; i < n; i++)
-        {
-            double ri = b[i];
-            for (std::size_t j = 0; j < n; j++)
-                ri -= a[i * n + j] * x_old[j];
-            res_norm += ri * ri;
-        }
-
-        res_norm = std::sqrt(res_norm);
-        if (res_norm <= tol)
-            return iter + 1;
-
-        std::memcpy(x_old.data(), x, n * sizeof(double));
-    }
-    return -1;
-}
-
-// ---------- parallel Jacobi, Variant 2: one #pragma omp parallel for whole algorithm ----------
-int solve_jacobi_parallel_whole(const double *a, const double *b, double *x, std::size_t n,
-                                int max_iter, double tol)
-{
-    if (n == 0 || a == nullptr || b == nullptr || x == nullptr)
-        return -1;
-    for (std::size_t i = 0; i < n; i++)
-        if (std::abs(a[i * n + i]) < 1e-15)
-            return -1;
-
-    double tau = 1.0 / (2.0 * static_cast<double>(n));
-
-    std::vector<double> x_old(n, 0.0);
-    int converged = 0;
-    int last_iter = -1;
-    double res_norm = 0.0;
-    double local_res = 0.0;
-
-#pragma omp parallel shared(x_old, x, converged, last_iter, res_norm, local_res)
-    {
-        for (int iter = 0; iter < max_iter && !converged; iter++)
-        {
-#pragma omp for
-            for (std::size_t i = 0; i < n; i++)
-            {
+        for (int k = 0; k < cfg.max_iter; ++k) {
+            #pragma omp for schedule(runtime)
+            for (int i = 0; i < n; ++i) {
                 double sum = 0.0;
-                for (std::size_t j = 0; j < n; j++)
-                    sum += a[i * n + j] * x_old[j];
-
-                double ri = b[i] - sum;
-                x[i] = x_old[i] + tau * ri;
-            }
-
-#pragma omp single
-            local_res = 0.0;
-
-#pragma omp for reduction(+ : local_res)
-            for (std::size_t i = 0; i < n; i++)
-            {
-                double ri = b[i];
-                for (std::size_t j = 0; j < n; j++)
-                    ri -= a[i * n + j] * x_old[j];
-                local_res += ri * ri;
-            }
-
-#pragma omp single
-            {
-                res_norm = std::sqrt(local_res);
-                if (res_norm <= tol)
-                {
-                    converged = 1;
-                    last_iter = iter + 1;
+                for (int j = 0; j < n; ++j) {
+                    sum += a_ij(i, j) * x[j];
                 }
-                if (!converged)
-                    std::memcpy(x_old.data(), x, n * sizeof(double));
+                ax[i] = sum;
             }
-        }
-    }
 
-    return converged ? last_iter : -1;
-}
+            #pragma omp for schedule(runtime)
+            for (int i = 0; i < n; ++i) {
+                r[i] = b[i] - ax[i];
+            }
 
-// ---------- CSV output (instead of gnuplot scripts) ----------
-void write_speedup_csv_jacobi(std::size_t n,
-                              const std::vector<int> &threads,
-                              double T_serial,
-                              const std::vector<double> &T_blocks,
-                              const std::vector<double> &T_whole)
-{
-    if (threads.empty() ||
-        T_blocks.size() != threads.size() ||
-        T_whole.size() != threads.size())
-        return;
-
-    std::ostringstream name_suffix;
-    name_suffix << n;
-    std::string csv_filename = "speedup_jacobi_" + name_suffix.str() + ".csv";
-
-    std::ofstream csv(csv_filename.c_str());
-    if (!csv)
-    {
-        std::cerr << "Cannot open " << csv_filename << " for writing\n";
-        return;
-    }
-
-    csv << "threads,T_serial,T_blocks,S_blocks,E_blocks,T_whole,S_whole,E_whole\n";
-    for (std::size_t i = 0; i < threads.size(); ++i)
-    {
-        double S_blocks = (T_blocks[i] > 0.0) ? (T_serial / T_blocks[i]) : 0.0;
-        double S_whole = (T_whole[i] > 0.0) ? (T_serial / T_whole[i]) : 0.0;
-        double E_blocks = (threads[i] > 0) ? (S_blocks / (double)threads[i]) : 0.0;
-        double E_whole = (threads[i] > 0) ? (S_whole / (double)threads[i]) : 0.0;
-        csv << threads[i] << ","
-            << T_serial << ","
-            << T_blocks[i] << "," << S_blocks << "," << E_blocks << ","
-            << T_whole[i] << "," << S_whole << "," << E_whole << "\n";
-    }
-    csv.close();
-}
-
-// ---------- experiment driver ----------
-void run_experiments(std::size_t n_input, int max_iter_input, bool verbose = true, bool write_csv = true)
-{
-    const std::size_t sizes[] = {n_input};
-    const int threads_list[] = {1, 2, 4, 8, 16, 20, 40};
-    const std::size_t n_sizes = sizeof(sizes) / sizeof(sizes[0]);
-    const std::size_t n_threads = sizeof(threads_list) / sizeof(threads_list[0]);
-
-    const int repeats = 7;
-    const int drop_max = 1;
-
-    if (verbose)
-        std::cout << std::fixed << std::setprecision(9);
-
-    for (std::size_t s = 0; s < n_sizes; ++s)
-    {
-        std::size_t n = sizes[s];
-        if (verbose)
-            std::cout << "\n========== Jacobi: matrix size n = " << n << " ==========\n";
-
-        std::vector<double> a, b, x_serial(n, 0.0);
-        generate_system(a, b, n);
-
-        std::vector<double> t_serial_samples;
-        t_serial_samples.reserve(repeats);
-        for (int r = 0; r < repeats; ++r)
-        {
-            std::fill(x_serial.begin(), x_serial.end(), 0.0);
-            t_serial_samples.push_back(run_solver(solve_jacobi_serial,
-                                                  a.data(), b.data(), x_serial.data(),
-                                                  n, max_iter_input, TOL, 1));
-        }
-        double T_serial = mean_drop_max(t_serial_samples, drop_max);
-        if (verbose)
-            std::cout << "T_serial = " << T_serial << " sec\n\n";
-
-        if (verbose)
-            std::cout << std::setw(8) << "threads"
-                      << std::setw(15) << "T_blocks"
-                      << std::setw(15) << "S_blocks"
-                      << std::setw(15) << "E_blocks"
-                      << std::setw(15) << "T_whole"
-                      << std::setw(15) << "S_whole"
-                      << std::setw(15) << "E_whole" << "\n";
-
-        std::vector<int> used_threads;
-        std::vector<double> T_blocks_vec;
-        std::vector<double> T_whole_vec;
-
-        for (std::size_t t = 0; t < n_threads; ++t)
-        {
-            int nthreads = threads_list[t];
-
-            std::vector<double> t_blocks_samples;
-            t_blocks_samples.reserve(repeats);
-            for (int r = 0; r < repeats; ++r)
+            #pragma omp single
             {
-                std::vector<double> x_blocks(n, 0.0);
-                t_blocks_samples.push_back(run_solver(solve_jacobi_parallel_blocks,
-                                                      a.data(), b.data(), x_blocks.data(),
-                                                      n, max_iter_input, TOL, nthreads));
+                norm_sq = 0.0;
             }
-            double T_blocks = mean_drop_max(t_blocks_samples, drop_max);
-            double S_blocks = (T_blocks > 0.0) ? T_serial / T_blocks : 0.0;
 
-            std::vector<double> t_whole_samples;
-            t_whole_samples.reserve(repeats);
-            for (int r = 0; r < repeats; ++r)
+            #pragma omp for schedule(runtime) reduction(+ : norm_sq)
+            for (int i = 0; i < n; ++i) {
+                norm_sq += r[i] * r[i];
+            }
+
+            #pragma omp single
             {
-                std::vector<double> x_whole(n, 0.0);
-                t_whole_samples.push_back(run_solver(solve_jacobi_parallel_whole,
-                                                     a.data(), b.data(), x_whole.data(),
-                                                     n, max_iter_input, TOL, nthreads));
+                residual = std::sqrt(norm_sq);
+                iter = k + 1;
             }
-            double T_whole = mean_drop_max(t_whole_samples, drop_max);
-            double S_whole = (T_whole > 0.0) ? T_serial / T_whole : 0.0;
-            double E_blocks = (nthreads > 0) ? S_blocks / (double)nthreads : 0.0;
-            double E_whole = (nthreads > 0) ? S_whole / (double)nthreads : 0.0;
 
-            if (verbose)
-                std::cout << std::setw(8) << nthreads
-                          << std::setw(15) << T_blocks
-                          << std::setw(15) << S_blocks
-                          << std::setw(15) << E_blocks
-                          << std::setw(15) << T_whole
-                          << std::setw(15) << S_whole
-                          << std::setw(15) << E_whole << "\n";
+            #pragma omp for schedule(runtime)
+            for (int i = 0; i < n; ++i) {
+                x_new[i] = x[i] + cfg.tau * r[i];
+            }
 
-            used_threads.push_back(nthreads);
-            T_blocks_vec.push_back(T_blocks);
-            T_whole_vec.push_back(T_whole);
+            #pragma omp for schedule(runtime)
+            for (int i = 0; i < n; ++i) {
+                x[i] = x_new[i];
+            }
+
+            #pragma omp barrier
+            if (residual <= cfg.tol) {
+                break;
+            }
         }
+    }
 
-        if (write_csv)
-            write_speedup_csv_jacobi(n, used_threads, T_serial, T_blocks_vec, T_whole_vec);
-        if (verbose)
-            std::cout << "Speedup data written to speedup_jacobi_" << n << ".csv\n";
+    const double t1 = omp_get_wtime();
+    return {iter, residual, t1 - t0};
+}
+
+static const char *schedule_name(omp_sched_t kind) {
+    if (kind == omp_sched_static) {
+        return "static";
+    }
+    if (kind == omp_sched_dynamic) {
+        return "dynamic";
+    }
+    if (kind == omp_sched_guided) {
+        return "guided";
+    }
+    if (kind == omp_sched_auto) {
+        return "auto";
+    }
+    return "unknown";
+}
+
+static Result run_single_case(const Config &cfg, const std::vector<double> &b) {
+    omp_set_num_threads(cfg.threads);
+    omp_set_schedule(cfg.schedule_kind, cfg.chunk_size);
+    return (cfg.variant == 1) ? richardson_variant1(cfg, b) : richardson_variant2(cfg, b);
+}
+
+static void write_variants_csv(const std::string &path, const std::vector<VariantRow> &rows) {
+    std::ofstream out(path);
+    out << "variant,threads,n,max_iter,tau,tol,iterations,residual,time_sec,schedule,chunk,speedup,efficiency\n";
+    out << std::fixed << std::setprecision(6);
+    for (const VariantRow &row : rows) {
+        out << row.variant << ','
+            << row.threads << ','
+            << row.n << ','
+            << row.max_iter << ','
+            << row.tau << ','
+            << row.tol << ','
+            << row.iterations << ','
+            << row.residual << ','
+            << row.time_sec << ','
+            << row.schedule << ','
+            << row.chunk << ','
+            << row.speedup << ','
+            << row.efficiency << '\n';
     }
 }
 
-int main(int argc, char **argv)
-{
-    std::size_t n_value = N_EXPERIMENT;
-    int max_iter_value = MAX_ITER;
-    int overall_repeats = OVERALL_RUNS_DEFAULT;
-
-    if (argc > 1)
-        n_value = (std::size_t)std::strtoull(argv[1], nullptr, 10);
-    if (argc > 2)
-        max_iter_value = std::atoi(argv[2]);
-    if (argc > 3)
-        overall_repeats = std::atoi(argv[3]);
-    if (overall_repeats < 1)
-        overall_repeats = 1;
-
-    std::cout << "Task3 config: N=" << n_value
-              << ", MAX_ITER=" << max_iter_value
-              << ", overall full runs=" << overall_repeats << std::endl;
-
-    const int overall_drop_max = 1;
-    std::vector<double> total_samples;
-    total_samples.reserve(overall_repeats);
-    for (int r = 0; r < overall_repeats; ++r)
-    {
-        std::cout << "Running full experiment pass " << (r + 1)
-                  << "/" << overall_repeats << "..." << std::endl;
-        double t0 = cpuSecond();
-        run_experiments(n_value, max_iter_value, false, false);
-        total_samples.push_back(cpuSecond() - t0);
+static void write_schedule_csv(const std::string &path, const std::vector<VariantRow> &rows) {
+    std::ofstream out(path);
+    out << "variant,threads,n,max_iter,tau,tol,iterations,residual,time_sec,schedule,chunk\n";
+    out << std::fixed << std::setprecision(6);
+    for (const VariantRow &row : rows) {
+        out << row.variant << ','
+            << row.threads << ','
+            << row.n << ','
+            << row.max_iter << ','
+            << row.tau << ','
+            << row.tol << ','
+            << row.iterations << ','
+            << row.residual << ','
+            << row.time_sec << ','
+            << row.schedule << ','
+            << row.chunk << '\n';
     }
-    double T_total_mean = mean_drop_max(total_samples, overall_drop_max);
+}
 
-    std::cout << "\nMean total runtime over " << overall_repeats
-              << " full runs (drop max " << overall_drop_max << "): "
-              << T_total_mean << " sec\n";
+int main() {
+    // All experiment parameters are configured here.
+    const int problem_n = 10000;
+    const int problem_max_iter = 20000;
+    const double problem_tau = 0.02;
+    const double problem_tol = 1e-8;
+    const omp_sched_t baseline_schedule = omp_sched_static;
+    const int baseline_chunk = 0;
 
-    std::cout << "\n=== Jacobi solver experiments (Task 3) ===\n";
-    run_experiments(n_value, max_iter_value, true, true);
+    const int max_threads = omp_get_max_threads();
+    const int schedule_variant = 2;
+    const int schedule_threads = (max_threads >= 8) ? 8 : max_threads;
+
+    const std::vector<SchedulePlan> schedule_plans = {
+        {omp_sched_static, "static", 0},
+        {omp_sched_static, "static", 1},
+        {omp_sched_static, "static", 16},
+        {omp_sched_dynamic, "dynamic", 1},
+        {omp_sched_dynamic, "dynamic", 16},
+        {omp_sched_guided, "guided", 1},
+        {omp_sched_guided, "guided", 16},
+    };
+
+    Config cfg;
+    cfg.n = problem_n;
+    cfg.max_iter = problem_max_iter;
+    cfg.tau = problem_tau;
+    cfg.tol = problem_tol;
+    cfg.schedule_kind = baseline_schedule;
+    cfg.chunk_size = baseline_chunk;
+
+    std::vector<double> b;
+    build_problem(cfg.n, b);
+
+    std::cout << std::fixed << std::setprecision(6);
+    std::cout << "Problem: n=" << cfg.n
+              << " max_iter=" << cfg.max_iter
+              << " tau=" << cfg.tau
+              << " tol=" << cfg.tol
+              << " threads_range=1.." << max_threads << '\n';
+
+    std::vector<VariantRow> variant_rows;
+    for (int variant = 1; variant <= 2; ++variant) {
+        double base_time = 0.0;
+        cfg.variant = variant;
+        for (int threads = 1; threads <= max_threads; ++threads) {
+            cfg.threads = threads;
+            const Result res = run_single_case(cfg, b);
+            if (threads == 1) {
+                base_time = res.seconds;
+            }
+            VariantRow row;
+            row.variant = variant;
+            row.threads = threads;
+            row.n = cfg.n;
+            row.max_iter = cfg.max_iter;
+            row.tau = cfg.tau;
+            row.tol = cfg.tol;
+            row.iterations = res.iters;
+            row.residual = res.residual;
+            row.time_sec = res.seconds;
+            row.schedule = schedule_name(cfg.schedule_kind);
+            row.chunk = cfg.chunk_size;
+            row.speedup = base_time / res.seconds;
+            row.efficiency = row.speedup / static_cast<double>(threads);
+            variant_rows.push_back(row);
+            std::cout << "variant=" << row.variant
+                      << " threads=" << row.threads
+                      << " time_sec=" << row.time_sec
+                      << " speedup=" << row.speedup
+                      << " efficiency=" << row.efficiency << '\n';
+        }
+    }
+    write_variants_csv("task3_variants.csv", variant_rows);
+    std::cout << "Wrote task3_variants.csv\n";
+
+    std::vector<VariantRow> schedule_rows;
+    cfg.variant = schedule_variant;
+    cfg.threads = schedule_threads;
+    for (const SchedulePlan &plan : schedule_plans) {
+        cfg.schedule_kind = plan.kind;
+        cfg.chunk_size = plan.chunk;
+        const Result res = run_single_case(cfg, b);
+        VariantRow row;
+        row.variant = cfg.variant;
+        row.threads = cfg.threads;
+        row.n = cfg.n;
+        row.max_iter = cfg.max_iter;
+        row.tau = cfg.tau;
+        row.tol = cfg.tol;
+        row.iterations = res.iters;
+        row.residual = res.residual;
+        row.time_sec = res.seconds;
+        row.schedule = plan.name;
+        row.chunk = plan.chunk;
+        schedule_rows.push_back(row);
+        std::cout << "schedule_test variant=" << row.variant
+                  << " threads=" << row.threads
+                  << " schedule=" << row.schedule
+                  << " chunk=" << row.chunk
+                  << " time_sec=" << row.time_sec << '\n';
+    }
+    write_schedule_csv("task3_schedule.csv", schedule_rows);
+    std::cout << "Wrote task3_schedule.csv\n";
 
     return 0;
 }
-
-
