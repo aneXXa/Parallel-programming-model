@@ -31,6 +31,18 @@ std::vector<int> parse_int_list(const std::string& text) {
     return values;
 }
 
+std::vector<int> make_range(int from, int to_inclusive) {
+    std::vector<int> values;
+    if (from > to_inclusive) {
+        return values;
+    }
+    values.reserve(static_cast<std::size_t>(to_inclusive - from + 1));
+    for (int v = from; v <= to_inclusive; ++v) {
+        values.push_back(v);
+    }
+    return values;
+}
+
 double mean_drop_max(std::vector<double> samples, int drop_max) {
     if (samples.empty()) {
         return -1.0;
@@ -260,7 +272,7 @@ void print_table(std::size_t n, const std::vector<ResultRow>& rows) {
 
 int main(int argc, char* argv[]) {
     std::vector<int> sizes = {20000, 40000};
-    std::vector<int> threads_list = {1, 2, 4, 7, 8, 16, 20, 40};
+    std::vector<int> threads_list = make_range(1, 40);
     int repeats = 5;
     int drop_max = 1;
     std::string out_prefix = "speedup_dgemv_stdthread";
@@ -284,7 +296,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Unknown or incomplete argument: " << arg << "\n";
             std::cerr << "Usage: " << argv[0]
                       << " [--sizes 20000,40000]"
-                      << " [--threads 1,2,4,7,8,16,20,40]"
+                      << " [--threads 1,2,...,40]"
                       << " [--repeats 5]"
                       << " [--drop-max 1]"
                       << " [--out-prefix speedup_dgemv_stdthread]"

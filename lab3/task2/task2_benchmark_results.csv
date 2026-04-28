@@ -1,5 +1,5 @@
 delivery,container,seconds_per_run_mean,n_per_kind,repeats
-slot,unordered_map,0.017593,300,7
-slot,std::map,0.019429,300,7
-promise,unordered_map,0.023152,300,7
-promise,std::map,0.017221,300,7
+slot,unordered_map,0.013304,500,3
+slot,std::map,0.013017,500,3
+promise,unordered_map,0.011178,500,3
+promise,std::map,0.010957,500,3
